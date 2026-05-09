@@ -1,0 +1,11 @@
+import "windows.foundation.idl";
+import "windows.applicationmodel.background.idl";
+
+namespace Maple_Task
+{
+    [default_interface]
+    runtimeclass VpnTask : Windows.ApplicationModel.Background.IBackgroundTask
+    {
+        VpnTask();
+    }
+}

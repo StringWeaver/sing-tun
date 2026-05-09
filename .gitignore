@@ -1,5 +1,40 @@
-/.idea/
-/vendor/
+# Build output
+build/
+out/
+bin/
+
+# Go generated headers and DLLs
+*.h
+*.dll
+*.exe
+
+# Visual Studio / MSVC
+*.obj
+*.exp
+*.pdb
+*.ilk
+*.lib
+*.def
+.vs/
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+*.sln
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+Makefile
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+
+# C++/WinRT and MIDL
+Generated/
+*.winmd
+
+# OS
+Thumbs.db
+Desktop.ini
 .DS_Store
-!/README.md
-/*.md
