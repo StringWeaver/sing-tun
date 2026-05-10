@@ -1,5 +1,4 @@
 //go:build windows && with_winrt_vpn
-// +build windows,with_winrt_vpn
 
 package tun
 
@@ -7,6 +6,11 @@ import (
 	"errors"
 	"io"
 	"sync"
+	"sync/atomic"
+	"syscall"
+	"unsafe"
+
+	"github.com/ebitengine/purego"
 )
 
 var (
@@ -15,12 +19,11 @@ var (
 
 type winRTVpn struct {
 	options Options
-	
+
 	// buffer for reading packets from C++ callback
 	packetChan chan []byte
-	
-	closed bool
-	mu     sync.Mutex
+
+	closed atomic.Bool
 }
 
 func NewWinRTVpn(options Options) (Tun, error) {
@@ -38,20 +41,23 @@ func (t *winRTVpn) Name() (string, error) {
 }
 
 func (t *winRTVpn) Start() error {
-	// Setup the global instance to receive C++ callbacks
+	// Register the global instance to receive callbacks from BoxWinRT_OnEncapsulate
 	setGlobalWinRTVpn(t)
+
+	// Initialize purego to resolve VpnChannel_InjectPacket from VpnPlugin.dll
+	// This must be done after the global instance is set, because the C++ side
+	// may call BoxWinRT_OnEncapsulate immediately after the engine starts.
+	initPuregoInject()
+
 	return nil
 }
 
 func (t *winRTVpn) Close() error {
-	t.mu.Lock()
-	defer t.mu.Lock()
-	if t.closed {
+	if !t.closed.CompareAndSwap(false, true) {
 		return nil
 	}
-	t.closed = true
-	close(t.packetChan)
 	clearGlobalWinRTVpn(t)
+	close(t.packetChan)
 	return nil
 }
 
@@ -69,7 +75,7 @@ func (t *winRTVpn) Read(p []byte) (n int, err error) {
 }
 
 func (t *winRTVpn) Write(p []byte) (n int, err error) {
-	if t.closed {
+	if t.closed.Load() {
 		return 0, io.EOF
 	}
 	// Call C++ DLL exported function VpnChannel_InjectPacket via purego
@@ -79,7 +85,26 @@ func (t *winRTVpn) Write(p []byte) (n int, err error) {
 	return len(p), nil
 }
 
-// Global state to handle C callbacks
+// OnEncapsulate is called by libbox's //export BoxWinRT_OnEncapsulate
+// when Windows VPN stack delivers an outbound IP packet via VpnPlugin::Encapsulate.
+func OnEncapsulate(packet []byte) {
+	globalWinRTVpnMu.RLock()
+	t := globalWinRTVpn
+	globalWinRTVpnMu.RUnlock()
+
+	if t == nil || t.closed.Load() {
+		return
+	}
+
+	select {
+	case t.packetChan <- packet:
+	default:
+		// Drop packet if channel is full
+	}
+}
+
+// --- Global state for callbacks ---
+
 var (
 	globalWinRTVpn   *winRTVpn
 	globalWinRTVpnMu sync.RWMutex
@@ -99,19 +124,61 @@ func clearGlobalWinRTVpn(t *winRTVpn) {
 	}
 }
 
-// OnEncapsulate is called by the C exported function when OS sends an outbound packet
-func OnEncapsulate(packet []byte) {
-	globalWinRTVpnMu.RLock()
-	t := globalWinRTVpn
-	globalWinRTVpnMu.RUnlock()
+// --- Purego: call VpnPlugin.dll exported functions without CGO ---
 
-	if t == nil || t.closed {
-		return
+var (
+	vpnChannelInjectPacket uintptr
+	puregoOnce             sync.Once
+	puregoInited           bool
+)
+
+// initPuregoInject resolves the VpnChannel_InjectPacket function from
+// VpnPlugin.dll using purego. This is called lazily from winRTVpn.Start()
+// rather than from init(), because:
+//   - In the new architecture, libbox.dll is loaded by VpnPlugin.dll via
+//     LoadLibrary, so VpnPlugin.dll is guaranteed to already be in-process.
+//   - The Go DLL's init() runs during LoadLibrary before the caller gets
+//     the handle back, so VpnPlugin.dll is available but deferring to
+//     Start() gives a cleaner lifecycle.
+func initPuregoInject() {
+	puregoOnce.Do(func() {
+		kernel32, err := syscall.LoadDLL("kernel32.dll")
+		if err != nil {
+			return
+		}
+		getModuleHandle, err := kernel32.FindProc("GetModuleHandleW")
+		if err != nil {
+			return
+		}
+
+		// Try VpnPlugin.dll by name first
+		name, _ := syscall.UTF16PtrFromString("VpnPlugin.dll")
+		ret, _, _ := getModuleHandle.Call(uintptr(unsafe.Pointer(name)))
+		if ret != 0 {
+			purego.RegisterLibFunc(&vpnChannelInjectPacket, ret, "VpnChannel_InjectPacket")
+			puregoInited = true
+			return
+		}
+
+		// Fallback: try the host executable module
+		ret, _, _ = getModuleHandle.Call(0)
+		if ret != 0 {
+			purego.RegisterLibFunc(&vpnChannelInjectPacket, ret, "VpnChannel_InjectPacket")
+			puregoInited = true
+		}
+	})
+}
+
+func injectPacketToWinRT(packet []byte) bool {
+	if !puregoInited || vpnChannelInjectPacket == 0 {
+		return false
 	}
 
-	select {
-	case t.packetChan <- packet:
-	default:
-		// Drop packet if channel is full
+	var dataPtr *byte
+	if len(packet) > 0 {
+		dataPtr = &packet[0]
 	}
+
+	ret, _, _ := purego.SyscallN(vpnChannelInjectPacket, uintptr(unsafe.Pointer(dataPtr)), uintptr(len(packet)))
+	return ret != 0
 }
