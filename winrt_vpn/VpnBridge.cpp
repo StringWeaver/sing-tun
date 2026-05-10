@@ -1,6 +1,11 @@
 #include "pch.h"
 #include "VpnPlugin.h"
 
+// --- Global callback pointer set by Go via VpnBridge_RegisterPlugin ---
+
+typedef uintptr_t (*OnEncapsulateCallback)(const uint8_t* data, size_t size);
+static OnEncapsulateCallback g_onEncapsulate = nullptr;
+
 namespace winrt::Maple_Task::implementation
 {
     VpnPlugin* VpnPlugin::s_instance = nullptr;
@@ -53,33 +58,10 @@ namespace winrt::Maple_Task::implementation
                 transport
             );
 
-            // 4. Load the sing-box core DLL (libbox.dll)
-            m_goModule = LoadLibraryW(L"libbox.dll");
-            if (!m_goModule) {
-                channel.TerminateConnection(L"Failed to load libbox.dll");
-                return;
-            }
-
-            // 5. Resolve exported functions from libbox.dll
-            m_boxWinRT_OnEncapsulate = (BoxWinRTEncapsulateFunc)GetProcAddress(m_goModule, "BoxWinRT_OnEncapsulate");
-            if (!m_boxWinRT_OnEncapsulate) {
-                channel.TerminateConnection(L"Failed to find BoxWinRT_OnEncapsulate in libbox.dll");
-                return;
-            }
-
-            // 6. Call libbox Setup to initialize the engine
-            //    libbox exports: void Setup(SetupOptions* options)
-            //    For now we use a simplified setup; the full integration will
-            //    pass proper base/working/temp paths from the frontend config.
-            typedef int (*BoxSetupFunc)(const char* basePath, const char* workingPath, const char* tempPath);
-            auto setupFunc = (BoxSetupFunc)GetProcAddress(m_goModule, "BoxWinRT_Setup");
-            // Setup is optional at this stage; the engine may be configured later
-
-            // 7. Call libbox StartOrReloadService with config content
-            //    The config should be provided by the frontend app through
-            //    some IPC mechanism (file, named pipe, etc.)
-            //    For now we just log that the plugin is ready.
-            //    TODO: Implement config passing from frontend
+            // Note: In the new architecture, we no longer LoadLibrary("libbox.dll")
+            // here. The Go engine (libbox.dll) is already loaded by the frontend
+            // App process, and the Go callback function pointer has been registered
+            // via VpnBridge_RegisterPlugin before the VPN channel is activated.
 
         } catch (std::exception const& ex) {
             channel.TerminateConnection(winrt::to_hstring(ex.what()));
@@ -95,24 +77,9 @@ namespace winrt::Maple_Task::implementation
         try {
             channel.Stop();
         } catch (...) {}
-        StopGoEngine();
-    }
-
-    void VpnPlugin::StopGoEngine()
-    {
-        if (m_goModule) {
-            // Call libbox CloseService to shut down the engine
-            typedef void (*BoxCloseFunc)();
-            auto closeFunc = (BoxCloseFunc)GetProcAddress(m_goModule, "BoxWinRT_Close");
-            if (closeFunc) {
-                closeFunc();
-            }
-            // Note: Do NOT FreeLibrary the Go DLL. Go runtime expects to stay
-            // loaded for the lifetime of the process. FreeLibrary can cause
-            // crashes due to leftover goroutines and finalizers.
-            m_goModule = nullptr;
-            m_boxWinRT_OnEncapsulate = nullptr;
-        }
+        // In the new architecture, we do NOT call Go's CloseService here.
+        // The frontend App manages the engine lifecycle directly.
+        // Just clean up our own state.
         m_channel = nullptr;
         if (s_instance == this) {
             s_instance = nullptr;
@@ -126,8 +93,8 @@ namespace winrt::Maple_Task::implementation
     void VpnPlugin::Encapsulate(winrt::Windows::Networking::Vpn::VpnChannel const& channel, winrt::Windows::Networking::Vpn::VpnPacketBufferList const& packets, winrt::Windows::Networking::Vpn::VpnPacketBufferList const&)
     {
         // Outbound traffic from OS to VPN
-        if (!m_boxWinRT_OnEncapsulate) {
-            // No handler registered, drain and drop packets
+        if (!g_onEncapsulate) {
+            // No Go handler registered, drain and drop packets
             uint32_t packetCount = packets.Size();
             while (packetCount-- > 0) {
                 packets.Append(packets.RemoveAtBegin());
@@ -140,8 +107,8 @@ namespace winrt::Maple_Task::implementation
             auto packet = packets.RemoveAtBegin();
             auto buffer = packet.Buffer();
 
-            // Pass each outbound IP packet to the Go core via libbox export
-            m_boxWinRT_OnEncapsulate(buffer.data(), static_cast<size_t>(buffer.Length()));
+            // Pass each outbound IP packet to Go via the registered callback
+            g_onEncapsulate(buffer.data(), static_cast<size_t>(buffer.Length()));
 
             // Return the packet buffer to the system pool
             packets.Append(packet);
@@ -174,7 +141,38 @@ namespace winrt::Maple_Task::implementation
     }
 }
 
+// --- DLL entry point ---
+
+extern "C" BOOL WINAPI DllMain(HINSTANCE, DWORD reason, LPVOID)
+{
+    if (reason == DLL_PROCESS_ATTACH)
+    {
+        DisableThreadLibraryCalls(nullptr);
+    }
+    return TRUE;
+}
+
+// --- Exported C functions for Go purego ---
+
 extern "C" {
+
+    __declspec(dllexport) void VpnBridge_InitCOM()
+    {
+        // Initialize COM apartment as multi_threaded.
+        // This must be called once from Go before any WinRT operations.
+        // NEVER call uninit_apartment() during process lifetime, as it
+        // destroys C++/WinRT static caches (activation factories) and
+        // causes crashes on subsequent calls.
+        winrt::init_apartment(winrt::apartment_type::multi_threaded);
+    }
+
+    __declspec(dllexport) void VpnBridge_RegisterPlugin(uintptr_t onEncapsulate)
+    {
+        // Store the Go callback function pointer.
+        // This is called from Go via purego after syscall.NewCallback(goOnEncapsulate).
+        g_onEncapsulate = reinterpret_cast<OnEncapsulateCallback>(onEncapsulate);
+    }
+
     __declspec(dllexport) bool VpnChannel_InjectPacket(const uint8_t* data, size_t size)
     {
         if (winrt::Maple_Task::implementation::VpnPlugin::s_instance) {
@@ -182,4 +180,5 @@ extern "C" {
         }
         return false;
     }
+
 }

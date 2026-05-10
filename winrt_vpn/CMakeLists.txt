@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(VpnPlugin LANGUAGES CXX)
+project(VpnBridge LANGUAGES CXX)
 
 set(CMAKE_SYSTEM_VERSION "10.0")
 set(CMAKE_CXX_STANDARD 20)
@@ -37,19 +37,20 @@ add_custom_target(GenerateWinRTHeaders DEPENDS
     ${CMAKE_CURRENT_SOURCE_DIR}/Generated/winrt/Maple_Task.h 
     ${CMAKE_CURRENT_SOURCE_DIR}/Generated/module.g.cpp)
 
-add_library(VpnPlugin SHARED
+add_library(VpnBridge SHARED
     VpnTask.h
     VpnTask.cpp
     VpnPlugin.h
-    VpnPlugin.cpp
+    VpnBridge.cpp
     Generated/module.g.cpp
+    Generated/Maple_Task.VpnTask.h
     pch.h
 )
 
-add_dependencies(VpnPlugin GenerateWinRTHeaders)
+add_dependencies(VpnBridge GenerateWinRTHeaders)
 
-target_include_directories(VpnPlugin PRIVATE Generated ${CMAKE_CURRENT_SOURCE_DIR})
-target_compile_options(VpnPlugin PRIVATE /bigobj)
-target_precompile_headers(VpnPlugin PRIVATE pch.h)
-target_link_libraries(VpnPlugin PRIVATE windowsapp)
-set_property(TARGET VpnPlugin PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+target_include_directories(VpnBridge PRIVATE Generated ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_options(VpnBridge PRIVATE /bigobj)
+target_precompile_headers(VpnBridge PRIVATE pch.h)
+target_link_libraries(VpnBridge PRIVATE windowsapp)
+set_property(TARGET VpnBridge PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")

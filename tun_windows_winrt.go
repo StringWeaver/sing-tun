@@ -41,13 +41,15 @@ func (t *winRTVpn) Name() (string, error) {
 }
 
 func (t *winRTVpn) Start() error {
-	// Register the global instance to receive callbacks from BoxWinRT_OnEncapsulate
+	// Register the global instance to receive callbacks from goOnEncapsulate
 	setGlobalWinRTVpn(t)
 
-	// Initialize purego to resolve VpnChannel_InjectPacket from VpnPlugin.dll
-	// This must be done after the global instance is set, because the C++ side
-	// may call BoxWinRT_OnEncapsulate immediately after the engine starts.
-	initPuregoInject()
+	// Initialize VpnBridge.dll via purego:
+	//   1. Load the DLL
+	//   2. Initialize COM apartment (VpnBridge_InitCOM)
+	//   3. Register Go callback via syscall.NewCallback (VpnBridge_RegisterPlugin)
+	//   4. Resolve VpnChannel_InjectPacket for inbound packet injection
+	initVpnBridge()
 
 	return nil
 }
@@ -85,8 +87,9 @@ func (t *winRTVpn) Write(p []byte) (n int, err error) {
 	return len(p), nil
 }
 
-// OnEncapsulate is called by libbox's //export BoxWinRT_OnEncapsulate
-// when Windows VPN stack delivers an outbound IP packet via VpnPlugin::Encapsulate.
+// OnEncapsulate is called by goOnEncapsulate (the callback registered via
+// syscall.NewCallback) when Windows VPN stack delivers an outbound IP packet
+// via VpnBridge's VpnPlugin::Encapsulate.
 func OnEncapsulate(packet []byte) {
 	globalWinRTVpnMu.RLock()
 	t := globalWinRTVpn
@@ -124,53 +127,75 @@ func clearGlobalWinRTVpn(t *winRTVpn) {
 	}
 }
 
-// --- Purego: call VpnPlugin.dll exported functions without CGO ---
+// --- Go callback for C++ Encapsulate (registered via syscall.NewCallback) ---
+
+// goOnEncapsulate is the Go function that C++ calls when the VPN stack
+// delivers an outbound IP packet. It must return uintptr as required by
+// syscall.NewCallback, even though the C++ side ignores the return value.
+func goOnEncapsulate(data *byte, size uintptr) uintptr {
+	if data == nil || size == 0 {
+		return 0
+	}
+	packet := unsafe.Slice(data, int(size))
+	packetCopy := make([]byte, len(packet))
+	copy(packetCopy, packet)
+	OnEncapsulate(packetCopy)
+	return 0
+}
+
+// --- Purego: load VpnBridge.dll and register callbacks ---
 
 var (
-	vpnChannelInjectPacket uintptr
-	puregoOnce             sync.Once
-	puregoInited           bool
+	vpnBridgeDLL               syscall.Handle
+	vpnBridgeInitCOM           func()
+	vpnBridgeRegisterPlugin    func(cb uintptr)
+	vpnChannelInjectPacket     uintptr
+	vpnBridgeOnce              sync.Once
+	vpnBridgeInited            bool
+	vpnBridgeInitErr           error
 )
 
-// initPuregoInject resolves the VpnChannel_InjectPacket function from
-// VpnPlugin.dll using purego. This is called lazily from winRTVpn.Start()
-// rather than from init(), because:
-//   - In the new architecture, libbox.dll is loaded by VpnPlugin.dll via
-//     LoadLibrary, so VpnPlugin.dll is guaranteed to already be in-process.
-//   - The Go DLL's init() runs during LoadLibrary before the caller gets
-//     the handle back, so VpnPlugin.dll is available but deferring to
-//     Start() gives a cleaner lifecycle.
-func initPuregoInject() {
-	puregoOnce.Do(func() {
-		kernel32, err := syscall.LoadDLL("kernel32.dll")
+// initVpnBridge loads VpnBridge.dll via purego, initializes COM apartment,
+// registers the Go encapsulate callback, and resolves the inject function.
+//
+// In the new architecture:
+//   - libbox.dll is loaded by the frontend App (Dart FFI)
+//   - VpnBridge.dll is loaded by Go via purego
+//   - Go registers its callback function pointer via VpnBridge_RegisterPlugin
+//   - No more LoadLibrary("libbox.dll") from C++ side
+func initVpnBridge() {
+	vpnBridgeOnce.Do(func() {
+		// 1. Load VpnBridge.dll
+		dllPath, err := syscall.UTF16PtrFromString("VpnBridge.dll")
 		if err != nil {
+			vpnBridgeInitErr = err
 			return
 		}
-		getModuleHandle, err := kernel32.FindProc("GetModuleHandleW")
+		vpnBridgeDLL, err = syscall.LoadLibrary(dllPath)
 		if err != nil {
+			vpnBridgeInitErr = err
 			return
 		}
 
-		// Try VpnPlugin.dll by name first
-		name, _ := syscall.UTF16PtrFromString("VpnPlugin.dll")
-		ret, _, _ := getModuleHandle.Call(uintptr(unsafe.Pointer(name)))
-		if ret != 0 {
-			purego.RegisterLibFunc(&vpnChannelInjectPacket, ret, "VpnChannel_InjectPacket")
-			puregoInited = true
-			return
-		}
+		// 2. Resolve exported functions via purego
+		purego.RegisterLibFunc(&vpnBridgeInitCOM, uintptr(vpnBridgeDLL), "VpnBridge_InitCOM")
+		purego.RegisterLibFunc(&vpnBridgeRegisterPlugin, uintptr(vpnBridgeDLL), "VpnBridge_RegisterPlugin")
+		purego.RegisterLibFunc(&vpnChannelInjectPacket, uintptr(vpnBridgeDLL), "VpnChannel_InjectPacket")
 
-		// Fallback: try the host executable module
-		ret, _, _ = getModuleHandle.Call(0)
-		if ret != 0 {
-			purego.RegisterLibFunc(&vpnChannelInjectPacket, ret, "VpnChannel_InjectPacket")
-			puregoInited = true
-		}
+		// 3. Initialize COM apartment (multi_threaded for Go goroutine compatibility)
+		//    Must be called once; never uninit during process lifetime.
+		vpnBridgeInitCOM()
+
+		// 4. Register Go encapsulate callback via syscall.NewCallback
+		cb := syscall.NewCallback(goOnEncapsulate)
+		vpnBridgeRegisterPlugin(cb)
+
+		vpnBridgeInited = true
 	})
 }
 
 func injectPacketToWinRT(packet []byte) bool {
-	if !puregoInited || vpnChannelInjectPacket == 0 {
+	if !vpnBridgeInited || vpnChannelInjectPacket == 0 {
 		return false
 	}
 
