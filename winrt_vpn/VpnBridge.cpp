@@ -6,7 +6,7 @@
 typedef uintptr_t (*OnEncapsulateCallback)(const uint8_t* data, size_t size);
 static OnEncapsulateCallback g_onEncapsulate = nullptr;
 
-namespace winrt::Maple_Task::implementation
+namespace winrt::SingTun::implementation
 {
     VpnPlugin* VpnPlugin::s_instance = nullptr;
 
@@ -175,8 +175,8 @@ extern "C" {
 
     __declspec(dllexport) bool VpnChannel_InjectPacket(const uint8_t* data, size_t size)
     {
-        if (winrt::Maple_Task::implementation::VpnPlugin::s_instance) {
-            return winrt::Maple_Task::implementation::VpnPlugin::s_instance->InjectReceivePacket(data, size);
+        if (winrt::SingTun::implementation::VpnPlugin::s_instance) {
+            return winrt::SingTun::implementation::VpnPlugin::s_instance->InjectReceivePacket(data, size);
         }
         return false;
     }

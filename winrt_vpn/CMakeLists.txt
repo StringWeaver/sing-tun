@@ -21,7 +21,7 @@ add_custom_command(
 
 # --- Step 2: winmd → projection headers (without -comp) ---
 add_custom_command(
-    OUTPUT ${GENERATED_DIR}/winrt/Maple_Task.h
+    OUTPUT ${GENERATED_DIR}/winrt/SingTun.h
     COMMAND cppwinrt.exe -in ${CMAKE_CURRENT_BINARY_DIR}/VpnTask.winmd
             -ref "10.0.26100.0+"
             -out ${GENERATED_DIR} -overwrite
@@ -29,24 +29,23 @@ add_custom_command(
     COMMENT "Generating C++/WinRT projection headers"
 )
 
-# --- Step 3: winmd → component stubs (with -comp), then strip static_assert ---
-# cppwinrt -comp generates module.g.cpp + Maple_Task.VpnTask.h automatically,
-# but Maple_Task.VpnTask.h contains a static_assert(false) guard that must be
-# removed (as the file's own comment instructs). We do this via a post-step
-# that deletes any line containing that static_assert.
+# --- Step 3: winmd → component stubs (with -comp) ---
+# cppwinrt -comp generates module.g.cpp + SingTun.VpnTask.h.
+# We ONLY need module.g.cpp. The generated SingTun.VpnTask.h is a stub with a static_assert.
+# We bypass the stub by having our own SingTun.VpnTask.h in the source root that just #include "VpnTask.h".
 add_custom_command(
     OUTPUT ${GENERATED_DIR}/module.g.cpp
-           ${GENERATED_DIR}/Maple_Task.VpnTask.h
     COMMAND cppwinrt.exe -in ${CMAKE_CURRENT_BINARY_DIR}/VpnTask.winmd
             -ref "10.0.26100.0+"
             -out ${GENERATED_DIR} -comp ${GENERATED_DIR} -overwrite
-    COMMAND cmd /C "findstr /V /C:\"static_assert(false\" \"${GENERATED_DIR}\\Maple_Task.VpnTask.h\" > \"${GENERATED_DIR}\\Maple_Task.VpnTask.h.tmp\" && move /Y \"${GENERATED_DIR}\\Maple_Task.VpnTask.h.tmp\" \"${GENERATED_DIR}\\Maple_Task.VpnTask.h\""
+    # Delete the generated stub to force module.g.cpp to #include our own SingTun.VpnTask.h
+    COMMAND ${CMAKE_COMMAND} -E rm -f ${GENERATED_DIR}/SingTun.VpnTask.h
     DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/VpnTask.winmd
-    COMMENT "Generating C++/WinRT component stubs + stripping static_assert"
+    COMMENT "Generating C++/WinRT component module.g.cpp and removing stub"
 )
 
 add_custom_target(GenerateWinRTHeaders DEPENDS
-    ${GENERATED_DIR}/winrt/Maple_Task.h
+    ${GENERATED_DIR}/winrt/SingTun.h
     ${GENERATED_DIR}/module.g.cpp
 )
 
@@ -57,7 +56,6 @@ add_library(VpnBridge SHARED
     VpnPlugin.h
     VpnBridge.cpp
     ${GENERATED_DIR}/module.g.cpp
-    ${GENERATED_DIR}/Maple_Task.VpnTask.h
     VpnBridge.def
     pch.h
 )

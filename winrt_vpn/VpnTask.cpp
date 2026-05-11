@@ -2,7 +2,7 @@
 #include "VpnTask.h"
 #include "VpnPlugin.h"
 
-namespace winrt::Maple_Task::implementation
+namespace winrt::SingTun::implementation
 {
     void VpnTask::Run(Windows::ApplicationModel::Background::IBackgroundTaskInstance const& taskInstance)
     {
