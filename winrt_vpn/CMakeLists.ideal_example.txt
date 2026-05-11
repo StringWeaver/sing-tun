@@ -1,0 +1,33 @@
+cmake_minimum_required(VERSION 3.20)
+project(VpnBridge LANGUAGES CXX)
+
+set(CMAKE_SYSTEM_VERSION "10.0")
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# 1. 声明库目标
+# 只需要把 .idl, .h, .cpp 直接塞进去，不需要自己写 custom_command 去调用底层工具
+add_library(VpnBridge SHARED
+    VpnTask.idl
+    VpnTask.h
+    VpnTask.cpp
+    VpnPlugin.h
+    VpnBridge.cpp
+    pch.h
+    VpnBridge.def
+)
+
+# 2. 开启 WinRT 组件模式（理想世界中的核心开关）
+# 这会告诉 MSBuild 把这个项目当做 WinRT 组件处理，并且处理 .idl 到 .winmd 的编译
+set_property(TARGET VpnBridge PROPERTY VS_WINRT_COMPONENT TRUE)
+
+# 3. 引入 C++/WinRT NuGet 包
+# MSBuild 会自动下载这个包，并在构建时自动注入目标，把 .winmd 转换成 C++ 代码，
+# 而且会自动帮你把生成的 module.g.cpp 等文件链接进编译管线中
+set_property(TARGET VpnBridge PROPERTY VS_PACKAGE_REFERENCES "Microsoft.Windows.CppWinRT_2.0.240405.15")
+
+# 4. 常规的编译选项
+target_compile_options(VpnBridge PRIVATE /bigobj)
+target_precompile_headers(VpnBridge PRIVATE pch.h)
+target_link_libraries(VpnBridge PRIVATE windowsapp)
+set_property(TARGET VpnBridge PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
