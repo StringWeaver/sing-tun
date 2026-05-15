@@ -166,12 +166,8 @@ var (
 func initVpnBridge() {
 	vpnBridgeOnce.Do(func() {
 		// 1. Load VpnBridge.dll
-		dllPath, err := syscall.UTF16PtrFromString("VpnBridge.dll")
-		if err != nil {
-			vpnBridgeInitErr = err
-			return
-		}
-		vpnBridgeDLL, err = syscall.LoadLibrary(dllPath)
+		var err error
+		vpnBridgeDLL, err = syscall.LoadLibrary("VpnBridge.dll")
 		if err != nil {
 			vpnBridgeInitErr = err
 			return
