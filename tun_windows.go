@@ -1,3 +1,5 @@
+//go:build windows && !with_winrt_vpn
+
 package tun
 
 import (

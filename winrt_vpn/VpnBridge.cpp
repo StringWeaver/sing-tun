@@ -143,11 +143,11 @@ namespace winrt::SingTun::implementation
 
 // --- DLL entry point ---
 
-extern "C" BOOL WINAPI DllMain(HINSTANCE, DWORD reason, LPVOID)
+extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD reason, LPVOID)
 {
     if (reason == DLL_PROCESS_ATTACH)
     {
-        DisableThreadLibraryCalls(nullptr);
+        DisableThreadLibraryCalls(hinstDLL);
     }
     return TRUE;
 }
@@ -158,12 +158,11 @@ extern "C" {
 
     __declspec(dllexport) void VpnBridge_InitCOM()
     {
-        // Initialize COM apartment as multi_threaded.
-        // This must be called once from Go before any WinRT operations.
-        // NEVER call uninit_apartment() during process lifetime, as it
-        // destroys C++/WinRT static caches (activation factories) and
-        // causes crashes on subsequent calls.
-        winrt::init_apartment(winrt::apartment_type::multi_threaded);
+        try {
+            winrt::init_apartment(winrt::apartment_type::multi_threaded);
+        } catch (...) {
+            // Ignore if already initialized or other error
+        }
     }
 
     __declspec(dllexport) void VpnBridge_RegisterPlugin(uintptr_t onEncapsulate)

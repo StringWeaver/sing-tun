@@ -1,4 +1,4 @@
-//go:build with_gvisor && windows
+//go:build with_gvisor && windows && !with_winrt_vpn
 
 package tun
 

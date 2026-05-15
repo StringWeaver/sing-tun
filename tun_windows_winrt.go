@@ -5,6 +5,7 @@ package tun
 import (
 	"errors"
 	"io"
+	"os"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -26,11 +27,19 @@ type winRTVpn struct {
 	closed atomic.Bool
 }
 
-func NewWinRTVpn(options Options) (Tun, error) {
+func New(options Options) (WinTun, error) {
 	return &winRTVpn{
 		options:    options,
 		packetChan: make(chan []byte, 1024),
 	}, nil
+}
+
+func (t *winRTVpn) ReadPacket() ([]byte, func(), error) {
+	packet, ok := <-t.packetChan
+	if !ok {
+		return nil, nil, io.EOF
+	}
+	return packet, func() {}, nil
 }
 
 func (t *winRTVpn) Name() (string, error) {
@@ -45,10 +54,6 @@ func (t *winRTVpn) Start() error {
 	setGlobalWinRTVpn(t)
 
 	// Initialize VpnBridge.dll via purego:
-	//   1. Load the DLL
-	//   2. Initialize COM apartment (VpnBridge_InitCOM)
-	//   3. Register Go callback via syscall.NewCallback (VpnBridge_RegisterPlugin)
-	//   4. Resolve VpnChannel_InjectPacket for inbound packet injection
 	initVpnBridge()
 
 	return nil
@@ -165,26 +170,44 @@ var (
 //   - No more LoadLibrary("libbox.dll") from C++ side
 func initVpnBridge() {
 	vpnBridgeOnce.Do(func() {
+		os.WriteFile("debug_go.log", []byte("initVpnBridge started\n"), 0644)
 		// 1. Load VpnBridge.dll
 		var err error
 		vpnBridgeDLL, err = syscall.LoadLibrary("VpnBridge.dll")
 		if err != nil {
 			vpnBridgeInitErr = err
+			os.WriteFile("debug_go.log", []byte("LoadLibrary failed: "+err.Error()+"\n"), 0644)
 			return
 		}
+		
+		f, _ := os.OpenFile("debug_go.log", os.O_APPEND|os.O_WRONLY, 0644)
+		f.WriteString("LoadLibrary success\n")
 
 		// 2. Resolve exported functions via purego
 		purego.RegisterLibFunc(&vpnBridgeInitCOM, uintptr(vpnBridgeDLL), "VpnBridge_InitCOM")
+		f.WriteString("RegisterLibFunc VpnBridge_InitCOM success\n")
+		
 		purego.RegisterLibFunc(&vpnBridgeRegisterPlugin, uintptr(vpnBridgeDLL), "VpnBridge_RegisterPlugin")
+		f.WriteString("RegisterLibFunc VpnBridge_RegisterPlugin success\n")
+		
 		purego.RegisterLibFunc(&vpnChannelInjectPacket, uintptr(vpnBridgeDLL), "VpnChannel_InjectPacket")
+		f.WriteString("RegisterLibFunc VpnChannel_InjectPacket success\n")
 
-		// 3. Initialize COM apartment (multi_threaded for Go goroutine compatibility)
-		//    Must be called once; never uninit during process lifetime.
+		// 3. Initialize COM apartment
+		f.WriteString("Calling vpnBridgeInitCOM...\n")
+		f.Sync()
 		vpnBridgeInitCOM()
+		f.WriteString("vpnBridgeInitCOM returned\n")
 
-		// 4. Register Go encapsulate callback via syscall.NewCallback
+		// 4. Register Go encapsulate callback
+		f.WriteString("Calling syscall.NewCallback...\n")
+		f.Sync()
 		cb := syscall.NewCallback(goOnEncapsulate)
+		f.WriteString("syscall.NewCallback success. Calling vpnBridgeRegisterPlugin...\n")
+		f.Sync()
 		vpnBridgeRegisterPlugin(cb)
+		f.WriteString("vpnBridgeRegisterPlugin returned\n")
+		f.Close()
 
 		vpnBridgeInited = true
 	})
