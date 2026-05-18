@@ -1,0 +1,7 @@
+LIBRARY VpnBridge
+EXPORTS
+    DllCanUnloadNow         = WINRT_CanUnloadNow PRIVATE
+    DllGetActivationFactory = WINRT_GetActivationFactory PRIVATE
+    VpnBridge_InitCOM
+    VpnBridge_RegisterPlugin
+    VpnChannel_InjectPacket
