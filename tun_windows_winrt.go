@@ -171,9 +171,13 @@ var (
 func initVpnBridge() {
 	vpnBridgeOnce.Do(func() {
 		os.WriteFile("debug_go.log", []byte("initVpnBridge started\n"), 0644)
-		// 1. Load VpnBridge.dll
+		// 1. We no longer load VpnBridge.dll, we load our own App executable
+		// since we export the C functions from the main App or Task executable directly.
+		// However, since we are already inside the process that exported these functions,
+		// we can just use purego to look them up in the current process module.
 		var err error
-		vpnBridgeDLL, err = syscall.LoadLibrary("VpnBridge.dll")
+		// GetModuleHandle(NULL) returns the handle to the file used to create the calling process (.exe or .dll)
+		vpnBridgeDLL, err = syscall.LoadLibrary("SingBox.Task.dll")
 		if err != nil {
 			vpnBridgeInitErr = err
 			os.WriteFile("debug_go.log", []byte("LoadLibrary failed: "+err.Error()+"\n"), 0644)
